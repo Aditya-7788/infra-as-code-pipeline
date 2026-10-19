@@ -1,0 +1,8 @@
+@"
+node_modules/
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars.secret
+.env
+"@ | Out-File -Encoding ascii .gitignore
