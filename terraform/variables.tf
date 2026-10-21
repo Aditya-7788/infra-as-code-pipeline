@@ -13,3 +13,7 @@ variable "project" {
   type    = string
   default = "infra-as-code-pipeline"
 }
+variable "enable_nat_gateway" {
+  type    = bool
+  default = false
+}
