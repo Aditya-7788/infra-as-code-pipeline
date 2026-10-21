@@ -201,3 +201,20 @@ const server = createServer((request, response) => {
 server.listen(port, "0.0.0.0", () => {
   console.log(`Daymark is running on http://localhost:${port}`);
 });
+
+const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+  // Health check endpoint for ALB and rollback validation
+  if (url.pathname === "/health") {
+    response.writeHead(200, { "Content-Type": "text/plain" });
+    response.end("ok");
+    return;
+  }
+
+  // Shows which version and environment is running (useful to see deploys and rollbacks)
+  if (url.pathname === "/version") {
+    sendJson(response, 200, {
+      version: process.env.APP_VERSION || "v1",
+      environment: process.env.ENVIRONMENT || "dev",
+    });
+    return;
+  }
