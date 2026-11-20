@@ -117,7 +117,7 @@ resource "aws_ecs_service" "app" {
 
   # Auto-scaling changes desired_count, so Terraform should not fight it
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition] # the CI/CD pipeline deploys new task definitions
   }
 
   depends_on = [aws_lb_listener.http]
