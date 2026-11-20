@@ -121,3 +121,83 @@ jobs:
           done
           echo "Staging health check failed"
           exit 1
+
+  deploy-production:
+    name: Deploy to production (approval required)
+    needs: [terraform-lint, docker-build-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The production environment has required reviewers, so the job waits here for manual approval
+    environment: production
+    concurrency: deploy-production
+    env:
+      AWS_REGION: ap-south-1
+      ECR_REPOSITORY: infra-as-code-pipeline-prod
+      ECS_CLUSTER: infra-as-code-pipeline-prod-cluster
+      ECS_SERVICE: infra-as-code-pipeline-prod-service
+      ALB_URL: http://iac-prod-alb-2054743722.ap-south-1.elb.amazonaws.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker build -t "$IMAGE" ./app
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      # Remember the currently running task definition, this is what we roll back to
+      - name: Register new task definition
+        run: |
+          CURRENT=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query "services[0].taskDefinition" --output text)
+          echo "PREVIOUS_TASK_DEF=$CURRENT" >> "$GITHUB_ENV"
+          aws ecs describe-task-definition --task-definition "$CURRENT" --query taskDefinition > td.json
+          jq --arg IMAGE "$IMAGE" --arg V "$GITHUB_SHA" '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+            | .containerDefinitions[0].image = $IMAGE
+            | .containerDefinitions[0].environment = (((.containerDefinitions[0].environment // []) | map(select(.name != "APP_VERSION"))) + [{name: "APP_VERSION", value: $V}])
+          ' td.json > new-td.json
+          NEW=$(aws ecs register-task-definition --cli-input-json file://new-td.json --query taskDefinition.taskDefinitionArn --output text)
+          echo "NEW_TASK_DEF=$NEW" >> "$GITHUB_ENV"
+          echo "Previous: $CURRENT"
+          echo "New: $NEW"
+
+      # Give the deployment 5 minutes to become stable, otherwise this step fails
+      - name: Deploy to ECS and wait (max 5 minutes)
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TASK_DEF" > /dev/null
+          timeout 300 aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      # Check that the NEW version is the one serving traffic, not just that something answers /health
+      - name: Verify new version is healthy
+        run: |
+          for i in $(seq 1 20); do
+            VERSION=$(curl -fs "$ALB_URL/version" | jq -r .version || true)
+            if [ "$VERSION" = "$GITHUB_SHA" ] && curl -fs "$ALB_URL/health" > /dev/null; then
+              echo "Production is healthy on $VERSION"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "New version is not serving healthy traffic"
+          exit 1
+
+      # Runs only if something above failed after the new task definition was registered
+      - name: Roll back to previous task definition
+        if: failure() && env.NEW_TASK_DEF != ''
+        run: |
+          echo "Deployment failed, rolling back to $PREVIOUS_TASK_DEF"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$PREVIOUS_TASK_DEF" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "Rollback complete"
+          exit 1
