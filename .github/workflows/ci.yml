@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  terraform-lint:
+    name: Terraform validate and tflint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      # Init without the S3 backend so no AWS credentials are needed for validation
+      - name: Terraform init
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: Run tflint
+        run: |
+          tflint --init
+          tflint --recursive
+
+  docker-build-test:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t app-test ./app
+
+      # Start the container and hit /health, this catches crashing builds before deploy
+      - name: Smoke test
+        run: |
+          docker run -d -p 3000:3000 --name apptest app-test
+          for i in $(seq 1 10); do
+            if curl -fs http://localhost:3000/health; then
+              echo "Health check passed"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Health check failed"
+          docker logs apptest
+          exit 1
