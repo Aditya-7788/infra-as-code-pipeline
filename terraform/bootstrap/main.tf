@@ -1,5 +1,6 @@
 # terraform/bootstrap/main.tf
 terraform {
+  required_version = ">= 1.5.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -13,11 +14,13 @@ provider "aws" {
 }
 
 variable "region" {
+  type = string
   default = "ap-south-1"
 }
 
 # Bucket name must be globally unique, change the suffix if needed
 variable "bucket_name" {
+  type = string
   default = "infra-as-code-pipeline-tfstate-aditya-001"
 }
 
