@@ -54,3 +54,70 @@ jobs:
           echo "Health check failed"
           docker logs apptest
           exit 1
+
+  deploy-staging:
+    name: Build, push to ECR and deploy to staging
+    needs: [terraform-lint, docker-build-test]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency: deploy-staging
+    env:
+      AWS_REGION: ap-south-1
+      ECR_REPOSITORY: infra-as-code-pipeline-staging
+      ECS_CLUSTER: infra-as-code-pipeline-staging-cluster
+      ECS_SERVICE: infra-as-code-pipeline-staging-service
+      ALB_URL: http://iac-staging-alb-1481759386.ap-south-1.elb.amazonaws.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Tag with the commit SHA (not only latest) so every version can be rolled back to
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker build -t "$IMAGE" ./app
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      # Copy the running task definition, swap the image, register it as a new revision
+      - name: Register new task definition
+        run: |
+          CURRENT=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query "services[0].taskDefinition" --output text)
+          echo "PREVIOUS_TASK_DEF=$CURRENT" >> "$GITHUB_ENV"
+          aws ecs describe-task-definition --task-definition "$CURRENT" --query taskDefinition > td.json
+          jq --arg IMAGE "$IMAGE" --arg V "$GITHUB_SHA" '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+            | .containerDefinitions[0].image = $IMAGE
+            | .containerDefinitions[0].environment = (((.containerDefinitions[0].environment // []) | map(select(.name != "APP_VERSION"))) + [{name: "APP_VERSION", value: $V}])
+          ' td.json > new-td.json
+          NEW=$(aws ecs register-task-definition --cli-input-json file://new-td.json --query taskDefinition.taskDefinitionArn --output text)
+          echo "NEW_TASK_DEF=$NEW" >> "$GITHUB_ENV"
+          echo "Previous: $CURRENT"
+          echo "New: $NEW"
+
+      - name: Deploy to ECS and wait until stable
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TASK_DEF" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Verify health through the ALB
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fs "$ALB_URL/health"; then
+              echo " Staging is healthy"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "Staging health check failed"
+          exit 1
