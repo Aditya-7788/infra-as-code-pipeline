@@ -110,16 +110,26 @@ jobs:
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TASK_DEF" > /dev/null
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
-      - name: Verify health through the ALB
+      - name: Verify new version is healthy
         run: |
-          for i in $(seq 1 10); do
-            if curl -fs "$ALB_URL/health"; then
-              echo " Staging is healthy"
+          for i in $(seq 1 20); do
+            VERSION=$(curl -fs "$ALB_URL/version" | jq -r .version || true)
+            if [ "$VERSION" = "$GITHUB_SHA" ] && curl -fs "$ALB_URL/health" > /dev/null; then
+              echo "Staging is healthy on $VERSION"
               exit 0
             fi
             sleep 6
           done
-          echo "Staging health check failed"
+          echo "New version is not serving healthy traffic"
+          exit 1
+
+      - name: Roll back to previous task definition
+        if: failure() && env.NEW_TASK_DEF != ''
+        run: |
+          echo "Deployment failed, rolling back to $PREVIOUS_TASK_DEF"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$PREVIOUS_TASK_DEF" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "Rollback complete"
           exit 1
 
   deploy-production:
