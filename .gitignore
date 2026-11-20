@@ -1,8 +1,15 @@
-@"
-node_modules/
+# Terraform
 .terraform/
 *.tfstate
-*.tfstate.backup
-*.tfvars.secret
+*.tfstate.*
+*.tfvars
+crash.log
+plan.txt
+
+# Secrets and local files
 .env
-"@ | Out-File -Encoding ascii .gitignore
+.aws/
+*.pem
+
+# Node
+node_modules/
