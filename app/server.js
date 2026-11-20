@@ -123,7 +123,7 @@ async function handleRequest(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   // Health check endpoint for ALB and rollback validation
   if (url.pathname === "/health") {
-    response.writeHead(200, { "Content-Type": "text/plain" });
+    response.writeHead(process.env.ENVIRONMENT ? 500 : 200, { "Content-Type": "text/plain" });
     response.end("ok");
     return;
   }
