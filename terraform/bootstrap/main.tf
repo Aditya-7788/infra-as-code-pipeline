@@ -14,13 +14,13 @@ provider "aws" {
 }
 
 variable "region" {
-  type = string
+  type    = string
   default = "ap-south-1"
 }
 
 # Bucket name must be globally unique, change the suffix if needed
 variable "bucket_name" {
-  type = string
+  type    = string
   default = "infra-as-code-pipeline-tfstate-aditya-001"
 }
 
